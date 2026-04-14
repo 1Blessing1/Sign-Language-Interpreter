@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign Language Interpreter</title>
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0f172a;
+    color: white;
+}
+
+.container {
+    max-width: 900px;
+    margin: auto;
+    padding: 20px;
+}
+
+/* Header */
+.header {
+    text-align: center;
+    font-size: 24px;
+    margin-bottom: 20px;
+}
+
+/* Video */
+.video-box {
+    width: 100%;
+    height: 420px;
+    background: black;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+}
+
+video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* Overlay Prediction */
+.overlay {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0,0,0,0.6);
+    padding: 10px 15px;
+    border-radius: 8px;
+}
+
+.overlay span {
+    display: block;
+}
+
+/* Bars */
+.bar {
+    margin-top: 15px;
+    padding: 15px;
+    border-radius: 10px;
+    background: #1e293b;
+}
+
+.label {
+    color: #38bdf8;
+    font-weight: bold;
+}
+
+.value {
+    margin-left: 10px;
+}
+
+/* Buttons */
+.buttons {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+}
+
+button {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #38bdf8;
+    color: black;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #0ea5e9;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="header">
+        Sign Language Interpreter
+    </div>
+
+    <!-- Webcam -->
+    <div class="video-box">
+        <video id="webcam" autoplay></video>
+
+        <!-- Overlay -->
+        <div class="overlay">
+            <span id="prediction">Prediction: -</span>
+            <span id="confidence">Confidence: -</span>
+        </div>
+    </div>
+
+    <!-- Sentence -->
+    <div class="bar">
+        <span class="label">Sentence:</span>
+        <span class="value" id="sentence">...</span>
+    </div>
+
+    <!-- Signs -->
+    <div class="bar">
+        <span class="label">Signs:</span>
+        <span class="value" id="signs">...</span>
+    </div>
+
+    <!-- Controls -->
+    <div class="buttons">
+        <button onclick="addLetter()">Add</button>
+        <button onclick="addSpace()">Space</button>
+        <button onclick="deleteLast()">Delete</button>
+        <button onclick="clearAll()">Clear</button>
+    </div>
+
+</div>
+
+<script>
+const video = document.getElementById("webcam");
+
+navigator.mediaDevices.getUserMedia({ video: true })
+    .then(stream => {
+        video.srcObject = stream;
+    });
+
+let sentence = "";
+let signs = [];
+
+// 🔥 NEW: stability variables
+const CONFIDENCE_THRESHOLD = 0.8;
+const PREDICTION_WINDOW = 10;
+const REQUIRED_STABLE_COUNT = 6;
+let predictionWindow = [];
+let stablePrediction = "";
+let stableConfidence = 0;
+
+// ---------------- BUTTONS ----------------
+function addLetter() {
+    if (stablePrediction) {
+        sentence += stablePrediction;
+        signs.push(stablePrediction);
+        updateUI();
+    }
+}
+
+function addSpace() {
+    sentence += " ";
+    updateUI();
+}
+
+function deleteLast() {
+    sentence = sentence.slice(0, -1);
+    updateUI();
+}
+
+function clearAll() {
+    sentence = "";
+    signs = [];
+    updateUI();
+}
+
+function updateUI() {
+    document.getElementById("sentence").innerText = sentence || "...";
+    document.getElementById("signs").innerText = signs.join(" ") || "...";
+}
+
+// ---------------- FRAME CAPTURE ----------------
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+
+async function sendFrame() {
+    if (!video.videoWidth) return; // 🔥 prevents crash early
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    ctx.drawImage(video, 0, 0);
+
+    const dataURL = canvas.toDataURL("image/jpeg");
+
+    try {
+        const response = await fetch("/predict", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ image: dataURL })
+        });
+
+        const result = await response.json();
+        const prediction = result.prediction;
+        const confidence = Number(result.confidence) || 0;
+
+        if (prediction && confidence >= CONFIDENCE_THRESHOLD) {
+            predictionWindow.push(prediction);
+        } else {
+            predictionWindow = [];
+        }
+
+        if (predictionWindow.length > PREDICTION_WINDOW) {
+            predictionWindow.shift();
+        }
+
+        const counts = predictionWindow.reduce((acc, value) => {
+            acc[value] = (acc[value] || 0) + 1;
+            return acc;
+        }, {});
+
+        const mostCommon = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        const stableCandidate = mostCommon ? mostCommon[0] : "";
+        const stableCount = mostCommon ? mostCommon[1] : 0;
+
+        if (stableCount >= REQUIRED_STABLE_COUNT) {
+            stablePrediction = stableCandidate;
+            stableConfidence = confidence;
+        } else {
+            stablePrediction = "";
+            stableConfidence = 0;
+        }
+
+        document.getElementById("prediction").innerText =
+            "Prediction: " + (stablePrediction || "-");
+
+        document.getElementById("confidence").innerText =
+            "Confidence: " + (stablePrediction ? stableConfidence.toFixed(2) : "-");
+
+    } catch (error) {
+        console.error("Error:", error);
+    }
+}
+
+// Run every 200ms
+setInterval(sendFrame, 200);
+</script>
+
+</body>
+</html>
